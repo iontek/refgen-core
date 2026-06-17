@@ -10,6 +10,7 @@ help:
 	@echo "make ps     - container status"
 	@echo "make test   - run tests in an ephemeral container (host stays clean)"
 	@echo "make dxm ARGS=\"...\" - run the dxm client (Docker) against the gateway, e.g. ARGS=\"panel list\""
+	@echo "make migrate-panels  - one-time ETL: old platform SQLite panels -> panels-svc Postgres"
 
 base:
 	docker build -f docker/svc-base.Dockerfile -t refgen/svc-base:0.2.0 .
@@ -51,3 +52,17 @@ dxm:
 		-e DX_SERVER=http://host.docker.internal:8090 \
 		--add-host=host.docker.internal:host-gateway \
 		dxm-dx:local $(ARGS)
+
+# One-time ETL: migrate panels from the old platform SQLite into panels-svc Postgres.
+# Reads the old DB read-only via the platform's `refgen-core` container volumes
+# (copied to /tmp inside the job), writes to the dxm panels DB. Lossless:
+# preserves content_hash + legacy ids. Requires the old platform to be running.
+.PHONY: migrate-panels
+migrate-panels:
+	docker run --rm --volumes-from refgen-core:ro \
+		-v "$(CURDIR)/migrations":/migrations:ro \
+		--network "$$(docker inspect refgen-core-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
+		--user root \
+		-e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/panels \
+		refgen/svc-base:0.2.0 \
+		sh -c 'cp /workspace/db/refgen.db* /tmp/ 2>/dev/null; OLD_DB=/tmp/refgen.db python /migrations/migrate_panels.py'
