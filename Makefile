@@ -11,6 +11,7 @@ help:
 	@echo "make test   - run tests in an ephemeral container (host stays clean)"
 	@echo "make dxm ARGS=\"...\" - run the dxm client (Docker) against the gateway, e.g. ARGS=\"panel list\""
 	@echo "make migrate-panels  - one-time ETL: old platform SQLite panels -> panels-svc Postgres"
+	@echo "make migrate-users   - one-time ETL: old platform auth_users -> identity-svc Postgres"
 
 base:
 	docker build -f docker/svc-base.Dockerfile -t refgen/svc-base:0.2.0 .
@@ -66,3 +67,13 @@ migrate-panels:
 		-e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/panels \
 		refgen/svc-base:0.2.0 \
 		sh -c 'cp /workspace/db/refgen.db* /tmp/ 2>/dev/null; OLD_DB=/tmp/refgen.db python /migrations/migrate_panels.py'
+
+.PHONY: migrate-users
+migrate-users:
+	docker run --rm --volumes-from refgen-core:ro \
+		-v "$(CURDIR)/migrations":/migrations:ro \
+		--network "$$(docker inspect refgen-core-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
+		--user root \
+		-e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/identity \
+		refgen/svc-base:0.2.0 \
+		sh -c 'cp /workspace/db/refgen.db* /tmp/ 2>/dev/null; OLD_DB=/tmp/refgen.db python /migrations/migrate_users.py'

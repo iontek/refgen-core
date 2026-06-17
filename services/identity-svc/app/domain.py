@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -49,6 +50,18 @@ def hash_password(password: str, salt: bytes | None = None) -> str:
 
 
 def verify_password(password: str, stored: str) -> bool:
+    if not stored:
+        return False
+    # Django format (migrated users): pbkdf2_sha256$<iters>$<salt>$<b64-hash>
+    if stored.startswith("pbkdf2_sha256$"):
+        try:
+            _algo, iters, salt, h = stored.split("$", 3)
+            dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(),
+                                     int(iters))
+            return hmac.compare_digest(base64.b64encode(dk).decode().strip(), h)
+        except Exception:
+            return False
+    # native format: <salt_hex>$<dk_hex>
     try:
         salt_hex, dk_hex = stored.split("$")
     except (ValueError, AttributeError):
