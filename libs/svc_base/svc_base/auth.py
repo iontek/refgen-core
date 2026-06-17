@@ -25,6 +25,8 @@ class Principal:
         self.roles = roles
         self.claims = claims
         self.tenant_id = claims.get("tenant_id")
+        self.scope = claims.get("scope") or ([self.tenant_id] if self.tenant_id else [])
+        self.entitlements = claims.get("entitlements", [])
 
 
 def issue_token(
@@ -32,6 +34,8 @@ def issue_token(
     subject: str,
     roles: Optional[list] = None,
     tenant_id: Optional[str] = None,
+    scope: Optional[list] = None,
+    entitlements: Optional[list] = None,
     extra: Optional[dict] = None,
     expires_minutes: int = 720,
 ) -> str:
@@ -41,6 +45,8 @@ def issue_token(
         "user_id": subject,
         "roles": roles or [],
         "tenant_id": tenant_id,
+        "scope": scope if scope is not None else ([tenant_id] if tenant_id else []),
+        "entitlements": entitlements or [],
         "iat": now,
         "exp": now + datetime.timedelta(minutes=expires_minutes),
     }
@@ -88,3 +94,16 @@ def require_roles(*roles: str):
         return principal
 
     return checker
+
+
+def assert_tenant_access(principal: "Principal", resource_tenant_id) -> None:
+    """Raise 403 unless the caller may act on a resource owned by
+    `resource_tenant_id` — i.e. it's the caller's own tenant or within the
+    caller's accessible scope (its subtree). `None` resource = unscoped (allow)."""
+    if resource_tenant_id is None:
+        return
+    allowed = set(principal.scope or [])
+    if principal.tenant_id:
+        allowed.add(principal.tenant_id)
+    if resource_tenant_id not in allowed:
+        raise HTTPException(status_code=403, detail="cross-tenant access denied")
