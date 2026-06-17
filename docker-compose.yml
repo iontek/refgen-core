@@ -45,6 +45,24 @@ services:
       postgres:
         condition: service_healthy
 
+  panels-svc:
+    <<: *svc
+    image: refgen/panels-svc:0.1.0
+    build:
+      context: .
+      dockerfile: services/panels-svc/Dockerfile
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-change-me}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/panels
+      AUTH_REQUIRED: "true"
+    ports:
+      - "8012:8000"     # standalone verification; gateway will front this later
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 networks:
   refgen-core-net:
     driver: bridge
