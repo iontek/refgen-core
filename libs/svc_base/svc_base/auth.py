@@ -24,12 +24,14 @@ class Principal:
         self.subject = subject
         self.roles = roles
         self.claims = claims
+        self.tenant_id = claims.get("tenant_id")
 
 
 def issue_token(
     settings,
     subject: str,
     roles: Optional[list] = None,
+    tenant_id: Optional[str] = None,
     extra: Optional[dict] = None,
     expires_minutes: int = 720,
 ) -> str:
@@ -38,6 +40,7 @@ def issue_token(
         "sub": subject,
         "user_id": subject,
         "roles": roles or [],
+        "tenant_id": tenant_id,
         "iat": now,
         "exp": now + datetime.timedelta(minutes=expires_minutes),
     }
