@@ -1,0 +1,28 @@
+# Local "city" of services. Each service is internal-only by default and
+# reachable by name over the refgen-core-net network (e.g. http://template-svc:8000).
+# As real services land (identity, panels, design) they get added here, and the
+# edge-gateway becomes the single host-facing port.
+
+x-svc: &svc
+  restart: unless-stopped
+  networks: [refgen-core-net]
+  environment:
+    JWT_SECRET: ${JWT_SECRET:-dev-insecure-change-me}
+    JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  template-svc:
+    <<: *svc
+    image: refgen/template-svc:0.1.0
+    build:
+      context: .
+      dockerfile: services/_template/Dockerfile
+    # Exposed here only so you can poke the template directly during bring-up.
+    # Real services stay internal and sit behind the gateway.
+    ports:
+      - "8010:8000"
+
+networks:
+  refgen-core-net:
+    driver: bridge
