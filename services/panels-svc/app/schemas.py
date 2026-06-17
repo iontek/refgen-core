@@ -19,8 +19,7 @@ class PanelPatch(BaseModel):
 
 
 class PanelOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    id: int
+    id: str                          # legacy code e.g. "panel-0015" (dx contract)
     code: Optional[str] = None
     label: str
     type: str
@@ -30,7 +29,11 @@ class PanelOut(BaseModel):
     current_version: Optional[str] = None
     parent_id: Optional[str] = None
     details: Optional[str] = None
-    created_at: Optional[datetime] = None
+    gene_count: int = 0
+    dna_count: int = 0
+    rna_count: int = 0
+    updated_at: Optional[int] = None   # ms epoch (dx _fmt_ts)
+    created_at: Optional[int] = None
 
 
 class AddGenesIn(BaseModel):
