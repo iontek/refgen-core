@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -54,7 +56,7 @@ def create_panel(body: PanelIn, db: Session = Depends(get_db),
     if not actor.tenant_id:
         raise HTTPException(status_code=403, detail="caller has no tenant")
     p = Panel(label=body.label, type=body.type, details=body.details,
-              owner=actor.subject, tenant_id=actor.tenant_id, status="draft")
+              created_by=actor.subject, tenant_id=actor.tenant_id, status="draft")
     db.add(p)
     db.commit()
     db.refresh(p)
@@ -120,7 +122,8 @@ def add_genes(pid: int, body: AddGenesIn, db: Session = Depends(get_db),
     assert_mutable(p.status)
     added = []
     for sym in body.symbols:
-        g = PanelGene(panel_id=p.id, symbol=sym.upper(), target=body.target or p.type)
+        g = PanelGene(panel_id=p.id, symbol=sym.upper(),
+                      target=body.target or p.type, added_by=actor.subject)
         db.add(g)
         added.append(g)
     db.commit()
@@ -177,11 +180,15 @@ def lock(pid: int, body: LockIn, db: Session = Depends(get_db),
     genes = db.query(PanelGene).filter_by(panel_id=p.id).all()
     snap = panel_snapshot(p, genes)
     chash = content_hash(snap)
+    prev = (db.query(PanelVersion).filter_by(panel_id=p.id)
+            .order_by(PanelVersion.id.desc()).first())
     new_version = bump_semver(p.current_version or "0.0.0", body.bump)
     db.add(PanelVersion(
-        panel_id=p.id, version=new_version, content_hash=chash, snapshot=snap,
-        note=body.note, locked_by=body.signed_off_by or actor.subject,
-        tenant_id=p.tenant_id,
+        panel_id=p.id, version=new_version, content_hash=chash,
+        parent_hash=prev.content_hash if prev else None,   # version lineage
+        bump_kind=body.bump, status="locked", snapshot=snap, note=body.note,
+        locked_by=actor.subject, signed_off_by=body.signed_off_by,
+        locked_at=datetime.now(timezone.utc), tenant_id=p.tenant_id,
     ))
     p.current_version = new_version
     db.commit()

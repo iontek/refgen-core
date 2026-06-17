@@ -21,12 +21,14 @@ class PanelPatch(BaseModel):
 class PanelOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
+    code: Optional[str] = None
     label: str
     type: str
     status: str
-    owner: Optional[str] = None
+    created_by: Optional[str] = None
     tenant_id: str
     current_version: Optional[str] = None
+    parent_id: Optional[str] = None
     details: Optional[str] = None
     created_at: Optional[datetime] = None
 
@@ -41,7 +43,9 @@ class GeneOut(BaseModel):
     id: int
     panel_id: int
     symbol: str
+    hgnc_id: Optional[str] = None
     target: Optional[str] = None
+    transcript_override: Optional[str] = None
 
 
 class LockIn(BaseModel):
@@ -56,6 +60,9 @@ class VersionOut(BaseModel):
     panel_id: int
     version: str
     content_hash: str
+    parent_hash: Optional[str] = None
+    bump_kind: Optional[str] = None
     note: Optional[str] = None
     locked_by: Optional[str] = None
+    signed_off_by: Optional[str] = None
     created_at: Optional[datetime] = None
