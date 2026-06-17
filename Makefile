@@ -9,7 +9,7 @@ help:
 	@echo "make logs   - tail logs"
 	@echo "make ps     - container status"
 	@echo "make test   - run tests in an ephemeral container (host stays clean)"
-	@echo "make dx ARGS=\"...\" - run the dx CLI (Docker) against the gateway, e.g. ARGS=\"panel list\""
+	@echo "make dxm ARGS=\"...\" - run the dxm client (Docker) against the gateway, e.g. ARGS=\"panel list\""
 
 base:
 	docker build -f docker/svc-base.Dockerfile -t refgen/svc-base:0.2.0 .
@@ -35,14 +35,15 @@ test:
 	docker run --rm -v "$(CURDIR)":/work:ro -e PYTHONDONTWRITEBYTECODE=1 \
 		python:3.13-slim sh -c "cp -r /work/libs/svc_base /tmp/pkg && pip install -q /tmp/pkg pytest==8.3.4 httpx==0.28.1 && python -m pytest /tmp/pkg/tests -q"
 
-# Real dx CLI in a container, pointed at the gateway. Login persists in a named
-# volume so it survives between calls. Host stays clean (nothing installed).
-#   make dx ARGS="login -u admin -p admin"
-#   make dx ARGS="panel list"
-#   make dx                       # bare -> interactive TUI
+# The dxm client = the dx CLI in a container, pointed at the dxm gateway. Uses
+# its OWN config volume, so it never touches the host's ~/.dx (the old `dx` that
+# talks to the platform on :8001). Two separate commands, two separate configs.
+#   make dxm ARGS="login -u admin -p admin"
+#   make dxm ARGS="panel list"
+#   make dxm                      # bare -> interactive TUI
 DX_SRC ?= ../refgen-platform/cli
-.PHONY: dx
-dx:
+.PHONY: dxm
+dxm:
 	@docker image inspect dxm-dx:local >/dev/null 2>&1 || \
 		docker build -q -f docker/dx.Dockerfile -t dxm-dx:local "$(DX_SRC)" >/dev/null
 	@docker run --rm -it \
