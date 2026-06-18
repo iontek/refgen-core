@@ -10,6 +10,7 @@ class PanelIn(BaseModel):
     label: str
     type: str = "DNA"
     details: Optional[str] = None
+    parent_id: Optional[str] = None   # source panel code → fork/clone its genes+regions
 
 
 class PanelPatch(BaseModel):
@@ -57,6 +58,37 @@ class LockIn(BaseModel):
     signed_off_by: Optional[str] = None
 
 
+class UnlockIn(BaseModel):
+    reason: str                       # mandatory: why a (mistaken) lock is undone
+
+
+class MarkConsumedIn(BaseModel):
+    run_id: str                       # the downstream run that consumed the version
+
+
+class RegionIn(BaseModel):
+    chr: str
+    start: int
+    end: int
+    name: str
+    kind: str = "other"
+    hgvs: Optional[str] = None
+    note: Optional[str] = None
+
+
+class RegionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    panel_id: int
+    chr: str
+    start: int
+    end: int
+    name: str
+    kind: Optional[str] = None
+    hgvs: Optional[str] = None
+    note: Optional[str] = None
+
+
 class VersionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -69,3 +101,5 @@ class VersionOut(BaseModel):
     locked_by: Optional[str] = None
     signed_off_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    consumed_at: Optional[datetime] = None
+    consumed_by: Optional[str] = None
