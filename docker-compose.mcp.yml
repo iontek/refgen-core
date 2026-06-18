@@ -16,10 +16,11 @@
 # Bring up:   docker compose -f docker-compose.mcp.yml up -d
 # Status:     docker compose -f docker-compose.mcp.yml ps
 #
-# NOT here (add when their data volumes are provisioned): clinvar-mcp (clinvar-data
-# ~1.2GB), vep-mcp (vep-cache ~25GB), civic-mcp (runtime download).
+# clinvar/vep/civic are included too — they REUSE the existing external data
+# volumes (clinvar-data, vep-cache ~25GB, civic-data) that the platform already
+# populated; nothing is downloaded.
 # Already running from the platform stack (reachable on refgen-net): agent-mcp(3020),
-# primer3-mcp(3017).
+# primer3-mcp(3017). Not containers: excalidraw/mermaid (per-session stdio MCPs).
 
 name: refgen-mcp
 
@@ -32,6 +33,10 @@ volumes:
   py-conda:       { external: true, name: py-mcp_conda-env }
   nextflow-work:  { external: true, name: nf-mcp_nextflow-work }
   nextflow-cache: { external: true, name: nf-mcp_nextflow-cache }
+  # reference snapshots — REUSED (already populated by the platform; no download)
+  clinvar-data:   { external: true }
+  vep-cache:      { external: true }
+  civic-data:     { external: true }
 
 x-mcp: &mcp
   restart: unless-stopped
@@ -121,6 +126,26 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes: [mcp-workspace:/workspace]
     extra_hosts: ["host.docker.internal:host-gateway"]
+
+  clinvar-mcp:                  # ClinVar SQLite cache — REUSES existing clinvar-data volume
+    <<: *mcp
+    image: ghcr.io/refgen/clinvar-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3008" }
+    volumes: [clinvar-data:/app/data]
+
+  vep-mcp:                      # Ensembl VEP — REUSES existing vep-cache volume (~25GB)
+    <<: *mcp
+    image: ghcr.io/refgen/vep-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3009" }
+    volumes:
+      - vep-cache:/opt/vep/.vep
+      - mcp-workspace:/workspace
+
+  civic-mcp:                    # CIViC evidence — REUSES existing civic-data volume
+    <<: *mcp
+    image: ghcr.io/refgen/civic-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3007" }
+    volumes: [civic-data:/app/data]
 
   # ── visualization ───────────────────────────────────────────────────────────
   igv-mcp:
