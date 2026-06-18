@@ -9,13 +9,16 @@ from sqlalchemy.orm import Session
 from svc_base.audit import record_audit
 from svc_base.auth import Principal, assert_tenant_access, require_auth, require_roles
 from svc_base.tenancy import scope_query
-from svc_base.versioning import assert_mutable, bump_semver, content_hash
+from svc_base.versioning import (
+    assert_lockable, assert_mutable, assert_validatable, bump_semver, content_hash,
+)
 
 from .db import get_db
 from .domain import VALID_TYPES, panel_snapshot, transition
-from .models import Panel, PanelGene, PanelVersion
+from .models import Panel, PanelCustomRegion, PanelGene, PanelVersion
 from .schemas import (
-    AddGenesIn, GeneOut, LockIn, PanelIn, PanelOut, PanelPatch, VersionOut,
+    AddGenesIn, GeneOut, LockIn, MarkConsumedIn, PanelIn, PanelOut, PanelPatch,
+    RegionIn, RegionOut, UnlockIn, VersionOut,
 )
 
 router = APIRouter()
@@ -136,14 +139,32 @@ def create_panel(body: PanelIn, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="bad type")
     if not actor.tenant_id:
         raise HTTPException(status_code=403, detail="caller has no tenant")
+    # Fork: clone genes + curated regions from a source panel into a new draft.
+    # This is how a locked panel is "changed" — it is never edited in place.
+    src = None
+    if body.parent_id:
+        src = _resolve(db, body.parent_id)
+        if not src:
+            raise HTTPException(status_code=404, detail="parent panel not found")
+        assert_tenant_access(actor, src.tenant_id)
     p = Panel(label=body.label, type=body.type, details=body.details,
-              created_by=actor.subject, tenant_id=actor.tenant_id, status="draft")
+              created_by=actor.subject, tenant_id=actor.tenant_id, status="draft",
+              parent_id=src.code if src else None)
     db.add(p)
     db.flush()
     p.code = _next_code(db)
+    if src:
+        for g in db.query(PanelGene).filter_by(panel_id=src.id).all():
+            db.add(PanelGene(panel_id=p.id, symbol=g.symbol, hgnc_id=g.hgnc_id,
+                             target=g.target, transcript_override=g.transcript_override,
+                             notes=g.notes, added_by=actor.subject))
+        for r in db.query(PanelCustomRegion).filter_by(panel_id=src.id).all():
+            db.add(PanelCustomRegion(panel_id=p.id, chr=r.chr, start=r.start, end=r.end,
+                                     name=r.name, kind=r.kind, hgvs=r.hgvs, note=r.note,
+                                     added_by=actor.subject))
     db.commit()
     db.refresh(p)
-    _audit(db, "panel.create", actor, p)
+    _audit(db, "panel.create", actor, p, parent_id=src.code if src else None)
     db.commit()
     return _out(db, p)
 
@@ -226,6 +247,42 @@ def list_genes(pid: str, db: Session = Depends(get_db),
             .order_by(PanelGene.symbol).all())
 
 
+# ── curated regions (part of the locked snapshot) ───────────────────────────
+
+@router.get("/panels/{pid}/regions", response_model=list[RegionOut], tags=["regions"])
+def list_regions(pid: str, db: Session = Depends(get_db),
+                 actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    return (db.query(PanelCustomRegion).filter_by(panel_id=p.id)
+            .order_by(PanelCustomRegion.chr, PanelCustomRegion.start).all())
+
+
+@router.post("/panels/{pid}/regions", response_model=RegionOut, status_code=201,
+             tags=["regions"])
+def add_region(pid: str, body: RegionIn, db: Session = Depends(get_db),
+               actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    assert_mutable(p.status)                      # locked → 409 (immutability)
+    r = PanelCustomRegion(panel_id=p.id, chr=body.chr, start=body.start, end=body.end,
+                          name=body.name, kind=body.kind or "other", hgvs=body.hgvs,
+                          note=body.note, added_by=actor.subject)
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return r
+
+
+@router.delete("/panels/{pid}/regions/{rid}", status_code=204, tags=["regions"])
+def delete_region(pid: str, rid: int, db: Session = Depends(get_db),
+                  actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    assert_mutable(p.status)
+    r = db.get(PanelCustomRegion, rid)
+    if r and r.panel_id == p.id:
+        db.delete(r)
+        db.commit()
+
+
 @router.get("/panels/{pid}/history", response_model=list[VersionOut], tags=["versions"])
 def history(pid: str, db: Session = Depends(get_db),
             actor: Principal = Depends(require_auth)):
@@ -249,7 +306,15 @@ def _transition_route(pid, action, db, actor):
 @router.post("/panels/{pid}/validate", response_model=PanelOut, tags=["state"])
 def validate(pid: str, db: Session = Depends(get_db),
              actor: Principal = Depends(require_auth)):
-    return _transition_route(pid, "validate", db, actor)
+    p = _get(db, pid, actor)
+    total, _, _ = _counts_for(db, p.id)
+    assert_validatable(p.status, total)           # draft + ≥1 gene
+    transition(p, "validate")
+    db.commit()
+    db.refresh(p)
+    _audit(db, "panel.validate", actor, p)
+    db.commit()
+    return _out(db, p)
 
 
 @router.post("/panels/{pid}/reject", response_model=PanelOut, tags=["state"])
@@ -262,13 +327,20 @@ def reject(pid: str, db: Session = Depends(get_db),
 def lock(pid: str, body: LockIn, db: Session = Depends(get_db),
          actor: Principal = Depends(require_roles("admin", "reviewer"))):
     p = _get(db, pid, actor)
-    transition(p, "lock")                         # must be 'validated'
     genes = db.query(PanelGene).filter_by(panel_id=p.id).all()
-    snap = panel_snapshot(p, genes)
+    assert_lockable(p.status, len(genes))         # validated + ≥1 gene
+    regions = db.query(PanelCustomRegion).filter_by(panel_id=p.id).all()
+    snap = panel_snapshot(p, genes, regions)      # pins genes + regions + ref versions
     chash = content_hash(snap)
+    # No-op re-lock: identical content yields the same hash. Reject cleanly
+    # instead of letting the unique constraint surface as a 500.
+    if db.query(PanelVersion).filter_by(content_hash=chash).first():
+        raise HTTPException(status_code=409,
+                            detail="content unchanged since last lock — nothing to version")
+    transition(p, "lock")
     prev = (db.query(PanelVersion).filter_by(panel_id=p.id)
             .order_by(PanelVersion.id.desc()).first())
-    new_version = bump_semver(p.current_version or "0.0.0", body.bump)
+    new_version = bump_semver(p.current_version, body.bump)   # first lock → 1.0.0
     db.add(PanelVersion(
         panel_id=p.id, version=new_version, content_hash=chash,
         parent_hash=prev.content_hash if prev else None,   # version lineage
@@ -291,10 +363,47 @@ def deprecate(pid: str, db: Session = Depends(get_db),
 
 
 @router.post("/panels/{pid}/unlock", response_model=PanelOut, tags=["state"])
-def unlock(pid: str, db: Session = Depends(get_db),
+def unlock(pid: str, body: UnlockIn, db: Session = Depends(get_db),
            actor: Principal = Depends(require_roles("admin"))):
-    # governance-gated: locked → draft (the prior immutable version is retained)
-    return _transition_route(pid, "unlock", db, actor)
+    """Undo a mistaken lock: locked → draft, keeping the immutable version row.
+    Allowed ONLY while the current locked version has not been consumed by a
+    run. Once a run has used it, the only path forward is a fork."""
+    p = _get(db, pid, actor)
+    cur = (db.query(PanelVersion).filter_by(panel_id=p.id)
+           .order_by(PanelVersion.id.desc()).first())
+    if cur and cur.consumed_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="locked version already used by a run — fork instead of unlocking",
+        )
+    transition(p, "unlock")                       # locked → draft
+    db.commit()
+    db.refresh(p)
+    _audit(db, "panel.unlock", actor, p, reason=body.reason,
+           version=cur.version if cur else None)
+    db.commit()
+    return _out(db, p)
+
+
+@router.post("/versions/{vid}/mark-consumed", response_model=VersionOut,
+             tags=["versions"])
+def mark_consumed(vid: int, body: MarkConsumedIn, db: Session = Depends(get_db),
+                  actor: Principal = Depends(require_auth)):
+    """Internal callback: design-svc stamps a version when a run consumes it,
+    which seals off the unlock escape hatch. Idempotent — the first run wins."""
+    v = db.get(PanelVersion, vid)
+    if not v:
+        raise HTTPException(status_code=404, detail="version not found")
+    assert_tenant_access(actor, v.tenant_id)
+    if v.consumed_at is None:
+        v.consumed_at = datetime.now(timezone.utc)
+        v.consumed_by = body.run_id
+        record_audit(db, action="version.consumed", actor=actor.subject,
+                     tenant_id=v.tenant_id, entity_type="version", entity_id=v.id,
+                     detail={"version": v.version, "run_id": body.run_id})
+        db.commit()
+        db.refresh(v)
+    return v
 
 
 @router.post("/panels/{pid}/archive", response_model=PanelOut, tags=["state"])

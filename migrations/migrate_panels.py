@@ -99,6 +99,25 @@ def main():
         versions += 1
     print(f"panel_versions: {versions}")
 
+    regions = 0
+    try:
+        src_regions = src.execute("SELECT * FROM panel_custom_regions")
+    except sqlite3.OperationalError:
+        src_regions = []                        # old DB predates curated regions
+    for r in src_regions:
+        npid = idmap.get(r["panel_id"])
+        if npid is None:
+            continue
+        cur.execute(
+            """INSERT INTO panel_custom_regions
+               (panel_id,chr,start,"end",name,kind,hgvs,note,added_by,added_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            (npid, r["chr"], r["start"], r["end"], r["name"], r["kind"],
+             r["hgvs"], r["note"], r["added_by"], dt(r["added_at"]) or now),
+        )
+        regions += 1
+    print(f"custom_regions: {regions}")
+
     dst.commit()
     print("committed.")
 

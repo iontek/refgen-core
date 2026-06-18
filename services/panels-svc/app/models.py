@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from sqlalchemy import (
-    JSON, Column, DateTime, ForeignKey, Integer, String, Text, func,
+    JSON, BigInteger, Column, DateTime, ForeignKey, Integer, String, Text,
+    UniqueConstraint, func,
 )
 
 from svc_base.db import Base
@@ -48,11 +49,14 @@ class PanelVersion(TenantScopedMixin, Base):
     """Immutable snapshot created at lock time — the traceability record."""
 
     __tablename__ = "panel_versions"
+    __table_args__ = (
+        UniqueConstraint("panel_id", "version", name="uq_panel_version"),
+    )
 
     id = Column(Integer, primary_key=True)
     panel_id = Column(Integer, ForeignKey("panels.id"), nullable=False, index=True)
     version = Column(String(16), nullable=False)
-    content_hash = Column(String(128), nullable=False)
+    content_hash = Column(String(128), nullable=False, unique=True)  # immutable identity
     parent_hash = Column(String(128))          # version lineage
     bump_kind = Column(String(8))
     status = Column(String(16))
@@ -64,3 +68,30 @@ class PanelVersion(TenantScopedMixin, Base):
     signed_off_by = Column(String(64))         # governance signature
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     locked_at = Column(DateTime(timezone=True))
+    # A version is "consumed" once a downstream run uses it. While unset, a
+    # mistaken lock can be undone (unlock → draft); once set, the only path
+    # forward is a fork. design-svc stamps this via the mark-consumed callback.
+    consumed_at = Column(DateTime(timezone=True))
+    consumed_by = Column(String(128))          # e.g. the run id that consumed it
+
+
+class PanelCustomRegion(Base):
+    """Designer-curated region added to a panel's target beyond MANE CDS + auto
+    hotspots — promoter, clinical UTR, founder/PGx position, paralog-discriminating
+    base. Part of the locked snapshot, so it pins into the content_hash. Reached
+    only via its panel (like PanelGene), so it inherits the panel's tenant scope."""
+
+    __tablename__ = "panel_custom_regions"
+
+    id = Column(Integer, primary_key=True)
+    panel_id = Column(Integer, ForeignKey("panels.id", ondelete="CASCADE"),
+                      nullable=False, index=True)
+    chr = Column(String(10), nullable=False)
+    start = Column(BigInteger, nullable=False)   # 0-based half-open
+    end = Column(BigInteger, nullable=False)
+    name = Column(String(120), nullable=False)
+    kind = Column(String(20), default="other")   # promoter/utr/founder/pgx/paralog/…
+    hgvs = Column(String(200))
+    note = Column(Text)
+    added_by = Column(String(64))
+    added_at = Column(DateTime(timezone=True), server_default=func.now())
