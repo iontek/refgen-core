@@ -1,6 +1,11 @@
 # Local "city" of services. Each service is internal-only by default and reachable
 # by name over refgen-core-net. As the gateway lands it becomes the only host port;
 # for now identity-svc is exposed directly so it can be verified standalone.
+#
+# Project name is `dxm` (containers: dxm-gateway-1, dxm-panels-svc-1, …) to avoid
+# confusion with the platform's control-plane container, which is named `refgen-core`.
+
+name: dxm
 
 x-svc: &svc
   restart: unless-stopped
@@ -132,3 +137,4 @@ networks:
 
 volumes:
   pgdata:
+    name: refgen-core_pgdata   # keep the existing data volume across the rename (16 panels + registry + design)

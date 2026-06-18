@@ -62,7 +62,7 @@ dxm:
 migrate-panels:
 	docker run --rm --volumes-from refgen-core:ro \
 		-v "$(CURDIR)/migrations":/migrations:ro \
-		--network "$$(docker inspect refgen-core-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
+		--network "$$(docker inspect dxm-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
 		--user root \
 		-e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/panels \
 		refgen/svc-base:0.2.0 \
@@ -72,7 +72,7 @@ migrate-panels:
 migrate-users:
 	docker run --rm --volumes-from refgen-core:ro \
 		-v "$(CURDIR)/migrations":/migrations:ro \
-		--network "$$(docker inspect refgen-core-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
+		--network "$$(docker inspect dxm-postgres-1 -f '{{range $$k,$$v := .NetworkSettings.Networks}}{{$$k}}{{end}}')" \
 		--user root \
 		-e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/identity \
 		refgen/svc-base:0.2.0 \
