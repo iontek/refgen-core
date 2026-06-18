@@ -95,3 +95,22 @@ class PanelCustomRegion(Base):
     note = Column(Text)
     added_by = Column(String(64))
     added_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class PanelMember(Base):
+    """A user assigned to a panel (project) with a role. `username` is a
+    cross-service string reference to identity-svc — NOT a FK (users live in
+    another service). Reached only via its panel."""
+
+    __tablename__ = "panel_members"
+    __table_args__ = (UniqueConstraint("panel_id", "username", name="uq_panel_member"),)
+
+    ROLES = ("owner", "designer", "reviewer", "observer", "external")
+
+    id = Column(Integer, primary_key=True)
+    panel_id = Column(Integer, ForeignKey("panels.id", ondelete="CASCADE"),
+                      nullable=False, index=True)
+    username = Column(String(80), nullable=False)
+    role = Column(String(20), default="observer")
+    added_by = Column(String(80), default="")
+    added_at = Column(DateTime(timezone=True), server_default=func.now())

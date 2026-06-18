@@ -66,6 +66,20 @@ class MarkConsumedIn(BaseModel):
     run_id: str                       # the downstream run that consumed the version
 
 
+class MemberIn(BaseModel):
+    username: str
+    role: str = "observer"
+
+
+class MemberOut(BaseModel):
+    id: int
+    panel_id: str                     # panel code (dx contract)
+    username: str
+    role: str
+    added_by: Optional[str] = None
+    added_at: Optional[int] = None    # ms epoch
+
+
 class RegionIn(BaseModel):
     chr: str
     start: int

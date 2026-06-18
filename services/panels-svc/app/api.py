@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -15,10 +15,10 @@ from svc_base.versioning import (
 
 from .db import get_db
 from .domain import VALID_TYPES, panel_snapshot, transition
-from .models import Panel, PanelCustomRegion, PanelGene, PanelVersion
+from .models import Panel, PanelCustomRegion, PanelGene, PanelMember, PanelVersion
 from .schemas import (
-    AddGenesIn, GeneOut, LockIn, MarkConsumedIn, PanelIn, PanelOut, PanelPatch,
-    RegionIn, RegionOut, UnlockIn, VersionOut,
+    AddGenesIn, GeneOut, LockIn, MarkConsumedIn, MemberIn, MemberOut, PanelIn,
+    PanelOut, PanelPatch, RegionIn, RegionOut, UnlockIn, VersionOut,
 )
 
 router = APIRouter()
@@ -178,6 +178,51 @@ def pending(db: Session = Depends(get_db), actor: Principal = Depends(require_au
             for p in panels]
 
 
+def _code(p: Panel) -> str:
+    return p.code or f"panel-{p.id:04d}"
+
+
+@router.get("/panels/compare", tags=["panels"])
+def compare(ids: str = "", db: Session = Depends(get_db),
+            actor: Principal = Depends(require_auth)):
+    """Set algebra over the panels' gene symbols (dxm keys on symbol — no HGNC
+    catalog). shared = intersection, union = all, only = per-panel exclusives."""
+    id_list = [i.strip() for i in ids.split(",") if i.strip()]
+    if len(id_list) < 2:
+        raise HTTPException(status_code=400, detail="compare needs >=2 panel ids")
+    panels, gene_sets = [], {}
+    for pid in id_list:
+        p = _get(db, pid, actor)
+        syms = {g.symbol for g in db.query(PanelGene).filter_by(panel_id=p.id).all()}
+        gene_sets[_code(p)] = syms
+        panels.append({"id": _code(p), "label": p.label, "status": p.status,
+                       "gene_count": len(syms)})
+    sets = list(gene_sets.values())
+    shared = sorted(set.intersection(*sets))
+    union = sorted(set.union(*sets))
+    only = {k: sorted(s - set.union(*[o for kk, o in gene_sets.items() if kk != k]))
+            for k, s in gene_sets.items()}
+    return {"panels": panels, "shared": shared, "shared_count": len(shared),
+            "union": union, "union_count": len(union), "only": only}
+
+
+@router.get("/panels/with-gene", tags=["panels"])
+def with_gene(symbols: str = "", db: Session = Depends(get_db),
+              actor: Principal = Depends(require_auth)):
+    """Reverse lookup: which (non-archived) panels contain each gene symbol."""
+    syms = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    out = {}
+    for sym in syms:
+        rows = (scope_query(db.query(Panel), Panel, _scope(actor))
+                .join(PanelGene, PanelGene.panel_id == Panel.id)
+                .filter(PanelGene.symbol == sym, Panel.status != "archived")
+                .order_by(Panel.id).distinct().all())
+        out[sym] = {"symbol": sym,
+                    "panels": [{"id": _code(p), "label": p.label, "status": p.status}
+                               for p in rows]}
+    return out
+
+
 @router.get("/versions", response_model=list[VersionOut], tags=["versions"])
 def versions(db: Session = Depends(get_db), actor: Principal = Depends(require_auth)):
     return (scope_query(db.query(PanelVersion), PanelVersion, _scope(actor))
@@ -289,6 +334,82 @@ def history(pid: str, db: Session = Depends(get_db),
     p = _get(db, pid, actor)
     return (db.query(PanelVersion).filter_by(panel_id=p.id)
             .order_by(PanelVersion.id).all())
+
+
+# ── members (project access control) ────────────────────────────────────────
+
+def _member_out(code: str, m: PanelMember) -> dict:
+    return {"id": m.id, "panel_id": code, "username": m.username, "role": m.role,
+            "added_by": m.added_by, "added_at": _ms(m.added_at)}
+
+
+def _can_manage_members(db: Session, panel: Panel, actor: Principal) -> bool:
+    """admin, the panel creator, or an owner-member may manage membership."""
+    if "admin" in (actor.roles or []):
+        return True
+    if actor.subject and actor.subject == panel.created_by:
+        return True
+    return (db.query(PanelMember)
+            .filter_by(panel_id=panel.id, username=actor.subject, role="owner")
+            .first() is not None)
+
+
+@router.get("/panels/{pid}/members", response_model=list[MemberOut], tags=["members"])
+def list_members(pid: str, db: Session = Depends(get_db),
+                 actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    rows = (db.query(PanelMember).filter_by(panel_id=p.id)
+            .order_by(PanelMember.role, PanelMember.username).all())
+    return [_member_out(_code(p), m) for m in rows]
+
+
+@router.post("/panels/{pid}/members", response_model=MemberOut, tags=["members"])
+def add_member(pid: str, body: MemberIn, response: Response,
+               db: Session = Depends(get_db),
+               actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    if body.role not in PanelMember.ROLES:
+        raise HTTPException(status_code=400,
+                            detail=f"bad role; one of {list(PanelMember.ROLES)}")
+    if not _can_manage_members(db, p, actor):
+        raise HTTPException(status_code=403,
+                            detail="only an owner, the creator, or an admin can manage members")
+    m = db.query(PanelMember).filter_by(panel_id=p.id, username=body.username).first()
+    created = m is None
+    if m is None:                                  # idempotent upsert
+        m = PanelMember(panel_id=p.id, username=body.username, role=body.role,
+                        added_by=actor.subject)
+        db.add(m)
+    else:
+        m.role = body.role
+    db.commit()
+    db.refresh(m)
+    _audit(db, "panel.member_add" if created else "panel.member_update", actor, p,
+           username=body.username, role=body.role)
+    db.commit()
+    response.status_code = 201 if created else 200
+    return _member_out(_code(p), m)
+
+
+@router.delete("/panels/{pid}/members/{mid}", status_code=204, tags=["members"])
+def remove_member(pid: str, mid: int, db: Session = Depends(get_db),
+                  actor: Principal = Depends(require_auth)):
+    p = _get(db, pid, actor)
+    if not _can_manage_members(db, p, actor):
+        raise HTTPException(status_code=403,
+                            detail="only an owner, the creator, or an admin can manage members")
+    m = db.get(PanelMember, mid)
+    if not m or m.panel_id != p.id:
+        return                                     # idempotent
+    if m.role == "owner":
+        owners = db.query(PanelMember).filter_by(panel_id=p.id, role="owner").count()
+        if owners <= 1:
+            raise HTTPException(status_code=400, detail="cannot remove the last owner")
+    uname = m.username
+    db.delete(m)
+    db.commit()
+    _audit(db, "panel.member_remove", actor, p, username=uname)
+    db.commit()
 
 
 # ── state machine ───────────────────────────────────────────────────────────
