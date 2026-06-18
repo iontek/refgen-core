@@ -4,7 +4,10 @@
 
 x-svc: &svc
   restart: unless-stopped
-  networks: [refgen-core-net]
+  # refgen-core-net = the dxm "city"; refgen-net = the shared MCP substrate
+  # (external, owned by the platform stack) so dxm services can reach the
+  # engine MCPs by name, e.g. http://primer3-mcp:3017/. postgres stays off it.
+  networks: [refgen-core-net, refgen-net]
 
 services:
   postgres:
@@ -84,6 +87,8 @@ services:
 networks:
   refgen-core-net:
     driver: bridge
+  refgen-net:
+    external: true        # the shared MCP substrate network (created by the platform)
 
 volumes:
   pgdata:
