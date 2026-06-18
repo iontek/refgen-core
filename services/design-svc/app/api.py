@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import json
+import os
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from svc_base import mcp_client
 from svc_base.auth import Principal, assert_tenant_access, require_auth
 from svc_base.tenancy import scope_query
 
-from .db import get_db
+from . import pipeline
+from .config import settings
+from .db import SessionLocal, get_db
 from .models import AdapterSet, ProbeArtifact, ProbeRun, ProbeRunStep, Recipe
 from .schemas import (
     AdapterIn, AdapterOut, AgentRunIn, AnalystIn, LitIn, RecipeIn, RecipeOut,
-    RunDetailOut, RunOut,
+    RunDetailOut, RunIn, RunOut,
 )
 from .seed_recipes import recipe_hash
 
@@ -169,7 +176,51 @@ def analyst(body: AnalystIn, actor: Principal = Depends(require_auth)):
     return _mcp_call(AGENT(), "run_analyst", {"variant": body.variant}, timeout=180)
 
 
-# ── runs (read scaffolding — POST create + execution land in Phase 2) ─────────
+# ── runs ──────────────────────────────────────────────────────────────────────
+
+@router.post("/probe-design/runs", response_model=RunDetailOut, status_code=201,
+             tags=["runs"])
+def create_run(body: RunIn, request: Request, db: Session = Depends(get_db),
+               actor: Principal = Depends(require_auth)):
+    """Create a run and launch it in the background. A panel run is gated on the
+    panel being locked and pins its current version (reproducibility anchor)."""
+    if not body.panel_id and not body.gene_symbol:
+        raise HTTPException(status_code=400, detail="panel_id or gene_symbol required")
+    if not actor.tenant_id:
+        raise HTTPException(status_code=403, detail="caller has no tenant")
+    panel_version = None
+    if body.panel_id:
+        tok = request.headers.get("authorization", "")     # forward caller's JWT
+        try:
+            r = httpx.get(f"{settings.panels_url}/panels/{body.panel_id}",
+                          headers={"Authorization": tok}, timeout=20)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502,
+                                detail=f"panels-svc unreachable: {type(exc).__name__}")
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail="panel not found")
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail="panel lookup failed")
+        panel = r.json()
+        if panel.get("status") != "locked":
+            raise HTTPException(
+                status_code=409,
+                detail=f"panel is '{panel.get('status')}'; lock it before designing")
+        panel_version = panel.get("current_version")
+    params = dict(body.params or {})
+    run = ProbeRun(pipeline_slug=body.pipeline_slug, panel_id=body.panel_id,
+                   gene_symbol=body.gene_symbol, panel_version=panel_version,
+                   status="queued", params=params,
+                   params_hash=pipeline.params_hash(params),
+                   triggered_by=actor.subject, tenant_id=actor.tenant_id)
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    pipeline.launch_run(run.id, SessionLocal)          # background daemon thread
+    out = _run_out(run)
+    out["steps"], out["artifacts"] = [], []
+    return out
+
 
 @router.get("/probe-design/runs", response_model=list[RunOut], tags=["runs"])
 def list_runs(pipeline_slug: str | None = None, db: Session = Depends(get_db),
@@ -192,3 +243,53 @@ def get_run(rid: str, db: Session = Depends(get_db),
                     .order_by(ProbeRunStep.step_order).all())
     out["artifacts"] = db.query(ProbeArtifact).filter_by(run_id=r.id).all()
     return out
+
+
+def _get_run(db: Session, rid: str, actor: Principal) -> ProbeRun:
+    r = db.get(ProbeRun, rid)
+    if not r:
+        raise HTTPException(status_code=404, detail="run not found")
+    assert_tenant_access(actor, r.tenant_id)
+    return r
+
+
+@router.get("/probe-design/runs/{rid}/provenance", tags=["runs"])
+def provenance(rid: str, db: Session = Depends(get_db),
+               actor: Principal = Depends(require_auth)):
+    """The run-integrity record (manifest.json, schema refgen.provenance/1)."""
+    r = _get_run(db, rid, actor)
+    path = os.path.join(r.workspace_dir or "", "manifest.json")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="no manifest (run not completed?)")
+    with open(path) as fh:
+        return json.load(fh)
+
+
+@router.get("/probe-design/runs/{rid}/graph", tags=["runs"])
+def graph(rid: str, db: Session = Depends(get_db),
+          actor: Principal = Depends(require_auth)):
+    r = _get_run(db, rid, actor)
+    steps = (db.query(ProbeRunStep).filter_by(run_id=r.id)
+             .order_by(ProbeRunStep.step_order).all())
+    lines = ["flowchart TD", f'  IN["{r.panel_id or r.gene_symbol or r.id}"]']
+    prev = "IN"
+    for s in steps:
+        nid = f"S{s.step_order}"
+        lines.append(f'  {nid}["{s.step_order} · {s.step_name}<br/>'
+                     f'{s.tool_id} · {s.duration_ms or 0}ms · {s.status}"]')
+        lines.append(f"  {prev} --> {nid}")
+        prev = nid
+    return {"run": r.id, "status": r.status, "mermaid": "\n".join(lines)}
+
+
+@router.get("/probe-design/runs/{rid}/artifact", tags=["runs"])
+def artifact(rid: str, name: str, db: Session = Depends(get_db),
+             actor: Principal = Depends(require_auth)):
+    r = _get_run(db, rid, actor)
+    ws = os.path.normpath(r.workspace_dir or "")
+    target = os.path.normpath(os.path.join(ws, name))
+    if not (ws and (target == ws or target.startswith(ws + os.sep))):
+        raise HTTPException(status_code=400, detail="bad artifact path")
+    if not os.path.isfile(target):
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(target, filename=os.path.basename(target))

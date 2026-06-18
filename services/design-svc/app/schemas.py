@@ -99,6 +99,14 @@ class RunDetailOut(RunOut):
 
 # ── MCP passthrough bodies ────────────────────────────────────────────────────
 
+class RunIn(BaseModel):
+    panel_id: Optional[str] = None       # panel code → locked gate + genes/regions from panels-svc
+    gene_symbol: Optional[str] = None    # single-gene run (no panel)
+    pipeline_slug: str = "create-target-bed"
+    params: dict = {}                    # cds_only, transcript_mode, padding_bp, merge_distance, …
+    recipe: Optional[str] = None
+
+
 class LitIn(BaseModel):
     tool: str
     args: dict = {}

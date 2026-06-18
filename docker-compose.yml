@@ -101,6 +101,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/design
       AUTH_REQUIRED: "true"
+      PANELS_URL: http://panels-svc:8000
+    volumes:
+      - mcp-workspace:/workspace      # shared with nf-mcp: pipeline writes target.bed, nf-mcp reads/merges
     ports:
       - "8014:8000"     # standalone verification; gateway fronts it in prod
     depends_on:
@@ -138,3 +141,5 @@ networks:
 volumes:
   pgdata:
     name: refgen-core_pgdata   # keep the existing data volume across the rename (16 panels + registry + design)
+  mcp-workspace:
+    external: true             # shared engine workspace (with the MCP substrate / nf-mcp)
