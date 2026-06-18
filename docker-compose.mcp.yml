@@ -1,0 +1,129 @@
+# Shared MCP substrate — the biyoinformatik engine, as its own stack.
+#
+# WHY a separate compose: the MCP servers are the shared engine used by BOTH the
+# old platform control-plane AND the new dxm services. They already live on the
+# external `refgen-net` with external data volumes, so running them here (instead
+# of inside the platform compose) decouples the engine from either control plane.
+#
+# HOW discovery works without container_name: the service name IS registered as a
+# DNS alias on refgen-net by compose, so `http://db-mcp:3016` resolves to this
+# stack's container from anywhere on the network — for platform core and for dxm
+# (registry-svc / design-svc) alike. No container_name → no clash with the old
+# stopped platform containers of the same name.
+#
+# Images are PINNED to the already-built tags (no build context needed here).
+#
+# Bring up:   docker compose -f docker-compose.mcp.yml up -d
+# Status:     docker compose -f docker-compose.mcp.yml ps
+#
+# NOT here (add when their data volumes are provisioned): clinvar-mcp (clinvar-data
+# ~1.2GB), vep-mcp (vep-cache ~25GB), civic-mcp (runtime download).
+# Already running from the platform stack (reachable on refgen-net): agent-mcp(3020),
+# primer3-mcp(3017).
+
+name: refgen-mcp
+
+networks:
+  refgen-net:
+    external: true
+
+volumes:
+  mcp-workspace:  { external: true }
+  py-conda:       { external: true, name: py-mcp_conda-env }
+  nextflow-work:  { external: true, name: nf-mcp_nextflow-work }
+  nextflow-cache: { external: true, name: nf-mcp_nextflow-cache }
+
+x-mcp: &mcp
+  restart: unless-stopped
+  networks: [refgen-net]
+  healthcheck:
+    test: ["CMD-SHELL", "curl -fsS http://localhost:$${MCP_PORT}/healthz || exit 1"]
+    interval: 30s
+    timeout: 3s
+    start_period: 10s
+    retries: 3
+  environment: &mcp-env
+    MCP_API_KEY: ${MCP_API_KEY:-}
+
+services:
+  # ── core / reference (node) ──────────────────────────────────────────────
+  db-mcp:                       # HGNC catalog, MANE, exon_catalog, panels (reads /workspace/db)
+    <<: *mcp
+    image: ghcr.io/refgen/db-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3016" }
+    volumes: [mcp-workspace:/workspace]
+
+  # ── compute ───────────────────────────────────────────────────────────────
+  r-mcp:                        # hg38 exon/sequence (BSgenome + TxDb) — self-contained image
+    <<: *mcp
+    image: ghcr.io/refgen/r-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3001" }
+    volumes: [mcp-workspace:/workspace]
+
+  py-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/py-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3003" }
+    volumes:
+      - mcp-workspace:/workspace
+      - py-conda:/opt/conda/envs/pymcp
+
+  # ── pipeline (Nextflow / bedtools / Picard) ────────────────────────────────
+  nf-mcp:
+    <<: *mcp
+    image: refgen-nf-mcp
+    environment: { <<: *mcp-env, MCP_PORT: "3004", NXF_WORK: /workspace/.work }
+    volumes:
+      - mcp-workspace:/workspace
+      - nextflow-work:/workspace/.work
+      - nextflow-cache:/workspace/.nextflow
+      - /var/run/docker.sock:/var/run/docker.sock      # Nextflow spawns containers
+
+  # ── knowledge / annotation ─────────────────────────────────────────────────
+  gnomad-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/gnomad-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3010" }
+
+  hpo-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/hpo-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3006" }
+    volumes: [mcp-workspace:/workspace]
+
+  hugo-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/hugo-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3012" }
+    volumes: [mcp-workspace:/workspace]
+
+  ucsc-mcp:
+    <<: *mcp
+    image: refgen-ucsc-mcp
+    environment: { <<: *mcp-env, MCP_PORT: "3013" }
+    volumes: [mcp-workspace:/workspace]
+
+  acmg-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/acmg-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3011" }
+
+  pubmed-mcp:                   # PubMed + local literature library (optional Ollama/Zotero)
+    <<: *mcp
+    image: refgen-pubmed-mcp
+    environment:
+      <<: *mcp-env
+      MCP_PORT:        "3021"
+      LITERATURE_DB:   /workspace/literature/literature.db
+      NCBI_API_KEY:    ${NCBI_API_KEY:-}
+      NCBI_EMAIL:      ${NCBI_EMAIL:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes: [mcp-workspace:/workspace]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  # ── visualization ───────────────────────────────────────────────────────────
+  igv-mcp:
+    <<: *mcp
+    image: ghcr.io/refgen/igv-mcp:1.0.0
+    environment: { <<: *mcp-env, MCP_PORT: "3005" }
