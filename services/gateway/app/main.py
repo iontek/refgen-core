@@ -30,6 +30,8 @@ _ROUTES = {
     "panels": settings.panels_url,
     "versions": settings.panels_url,
     "panel-genes": settings.panels_url,
+    "registry": settings.registry_url,     # MCP catalog + lifecycle
+    "mcp-status": settings.registry_url,   # MCP health summary
 }
 
 _PUBLIC = {

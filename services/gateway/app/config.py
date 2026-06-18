@@ -9,6 +9,7 @@ class Settings(BaseServiceSettings):
 
     identity_url: str = "http://identity-svc:8000"
     panels_url: str = "http://panels-svc:8000"
+    registry_url: str = "http://registry-svc:8000"
 
 
 settings = Settings()

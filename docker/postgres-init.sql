@@ -3,3 +3,4 @@
 CREATE DATABASE identity;
 CREATE DATABASE panels;
 CREATE DATABASE design;
+CREATE DATABASE registry;
