@@ -32,6 +32,7 @@ _ROUTES = {
     "panel-genes": settings.panels_url,
     "registry": settings.registry_url,     # MCP catalog + lifecycle
     "mcp-status": settings.registry_url,   # MCP health summary
+    "probe-design": settings.design_url,   # probe/bait runs, recipes, MCP passthrough
 }
 
 _PUBLIC = {

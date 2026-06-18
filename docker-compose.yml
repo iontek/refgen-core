@@ -84,6 +84,24 @@ services:
       postgres:
         condition: service_healthy
 
+  design-svc:
+    <<: *svc
+    image: refgen/design-svc:0.1.0
+    build:
+      context: .
+      dockerfile: services/design-svc/Dockerfile
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-change-me}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/design
+      AUTH_REQUIRED: "true"
+    ports:
+      - "8014:8000"     # standalone verification; gateway fronts it in prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   gateway:
     <<: *svc
     image: refgen/gateway:0.1.0
@@ -97,12 +115,14 @@ services:
       IDENTITY_URL: http://identity-svc:8000
       PANELS_URL: http://panels-svc:8000
       REGISTRY_URL: http://registry-svc:8000
+      DESIGN_URL: http://design-svc:8000
     ports:
       - "8090:8000"     # single host-facing door (8080 is taken by the platform's igv-viewer)
     depends_on:
       - identity-svc
       - panels-svc
       - registry-svc
+      - design-svc
 
 networks:
   refgen-core-net:
