@@ -54,7 +54,7 @@ services:
   # ── core / reference (node) ──────────────────────────────────────────────
   db-mcp:                       # HGNC catalog, MANE, exon_catalog, panels (reads /workspace/db)
     <<: *mcp
-    image: refgen/db-mcp:mane    # overlay: stock db-mcp + mane_exons read tool (docker/db-mcp-mane)
+    image: ghcr.io/refgen/db-mcp:1.0.0
     environment: { <<: *mcp-env, MCP_PORT: "3016" }
     volumes: [mcp-workspace:/workspace]
 
